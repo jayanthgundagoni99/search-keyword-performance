@@ -433,7 +433,7 @@ class TestGoldenSampleData:
     def test_hit_count(self):
         attr = SearchKeywordAttributor(session_timeout=None)
         attr.process_file(SAMPLE_DATA)
-        assert attr._hits_processed == 22
+        assert attr._hits_processed == 21
 
     def test_output_file_format(self):
         attr = SearchKeywordAttributor(session_timeout=None)

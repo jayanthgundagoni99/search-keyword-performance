@@ -112,7 +112,7 @@ Memory usage scales with the number of **unique visitors**, not with the file si
 
 ### Input Summary
 
-- 22 hits from 4 unique visitors
+- 21 hits from 4 unique visitors
 - 3 visitors arrived from external search engines:
   - `67.98.123.1` from Google (`q=Ipod`)
   - `23.8.61.21` from Bing (`q=Zune`)

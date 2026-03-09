@@ -185,7 +185,7 @@ infra/
 scripts/
   deploy-search-keyword.sh        # CDK deploy wrapper
   run-search-keyword-aws.sh       # Upload data, wait for output
-data/data.sql                     # Sample hit-level input (22 hits, 4 visitors)
+data/data.sql                     # Sample hit-level input (21 hits, 4 visitors)
 output/                           # Expected output artifact
 .github/workflows/ci.yml          # CI pipeline
 Dockerfile                        # Container for Batch/Fargate
