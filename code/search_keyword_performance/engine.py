@@ -157,7 +157,7 @@ class SearchKeywordAttributor:
                 in memory.
         """
         logger.info("Processing input file: %s", filepath)
-        self._try_restore_checkpoint(filepath)
+        self.restore_checkpoint(filepath)
 
         fh = open_input(filepath)
         try:
@@ -259,8 +259,12 @@ class SearchKeywordAttributor:
         os.replace(tmp, path)
         logger.info("Checkpoint written at %d hits: %s", self._hits_processed, path)
 
-    def _try_restore_checkpoint(self, filepath: str) -> None:
-        """Restore state from a checkpoint if one exists."""
+    def restore_checkpoint(self, filepath: str) -> None:
+        """Restore state from a checkpoint if one exists.
+
+        This is a no-op when checkpointing is disabled or no checkpoint
+        file is found.  Safe to call unconditionally before processing.
+        """
         if not self._checkpoint_dir:
             return
         path = self._checkpoint_path()

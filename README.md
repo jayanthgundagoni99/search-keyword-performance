@@ -89,7 +89,7 @@ python -m pytest tests/ -v
 |---|---|
 | Last-touch attribution | PDF doesn't specify a model; last-touch is simple and standard |
 | Visitor = `(ip, user_agent)` | No visitor/session ID in dataset |
-| Case-insensitive keywords | `"Ipod"` and `"ipod"` combined for cleaner reporting |
+| Case-insensitive keywords, first-seen display casing | Parser extracts raw keyword text; engine aggregates case-insensitively while preserving the first-seen casing for display (e.g. `"Ipod"` and `"ipod"` combine, displayed as `"Ipod"`) |
 | `search.yahoo.com` displayed as `yahoo.com` | Standardized display domain |
 | Input is chronologically sorted | Sample data is sorted; `--sort` flag available as safety net |
 

@@ -12,6 +12,7 @@ import pytest
 from search_keyword_performance.engine import SearchKeywordAttributor, open_input
 
 SAMPLE_DATA = os.path.join(os.path.dirname(__file__), "..", "data", "data.sql")
+REFERENCE_ARTIFACT = "2026-03-05_SearchKeywordPerformance.tab"
 
 TSV_FIELDS = [
     "hit_time_gmt", "date_time", "user_agent", "ip", "event_list",
@@ -47,7 +48,7 @@ def _make_gzip_tsv(rows: list[dict[str, str]], tmpdir: str) -> str:
 
 
 # ===================================================================
-# Core attribution tests (session timeout disabled for backwards compat)
+# Core attribution tests
 # ===================================================================
 
 
@@ -68,7 +69,8 @@ class TestSearchKeywordAttributor:
         assert len(results) == 1
         assert results[0] == ("google.com", "shoes", Decimal("49.99"))
 
-    def test_no_purchase_produces_no_output(self):
+    def test_revenue_ignored_without_purchase_event(self):
+        """Revenue in product_list is not counted unless event_list contains 1."""
         rows = [
             {"hit_time_gmt": "100", "ip": "1.2.3.4", "user_agent": "UA1",
              "referrer": "http://www.google.com/search?q=shoes",
@@ -95,7 +97,9 @@ class TestSearchKeywordAttributor:
 
         assert attr.get_results() == []
 
-    def test_case_insensitive_keyword_aggregation(self):
+    def test_case_insensitive_aggregation_preserves_first_seen_casing(self):
+        """Keywords are grouped case-insensitively; display form is the
+        first-seen casing (from search referrer, not purchase time)."""
         rows = [
             {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
              "referrer": "http://www.google.com/search?q=Ipod"},
@@ -113,8 +117,7 @@ class TestSearchKeywordAttributor:
             results = attr.get_results()
 
         assert len(results) == 1
-        assert results[0][0] == "google.com"
-        assert results[0][2] == Decimal("150")
+        assert results[0] == ("google.com", "Ipod", Decimal("150.00"))
 
     def test_multiple_engines_sorted_by_revenue(self):
         rows = [
@@ -155,6 +158,63 @@ class TestSearchKeywordAttributor:
         assert len(results) == 1
         assert results[0] == ("bing.com", "smartphone", Decimal("300.00"))
 
+    def test_repeated_purchases_accumulate_under_same_keyword(self):
+        """Two purchases after one search both attribute to the same keyword."""
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=shoes"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "S;Sneakers;1;80;"},
+            {"hit_time_gmt": "300", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "S;Boots;1;120;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+            results = attr.get_results()
+
+        assert len(results) == 1
+        assert results[0] == ("google.com", "shoes", Decimal("200.00"))
+
+    def test_hits_processed_counts_all_rows(self):
+        """The public hits_processed property reflects every row ingested."""
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=x"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1"},
+            {"hit_time_gmt": "300", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;X;1;10;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+
+        assert attr.hits_processed == 3
+
+    def test_internal_referrer_does_not_clear_attribution(self):
+        """Browsing internal pages between search and purchase preserves attribution."""
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=camera"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.esshopzilla.com/products/"},
+            {"hit_time_gmt": "300", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.esshopzilla.com/cart/"},
+            {"hit_time_gmt": "400", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;Camera;1;450;",
+             "referrer": "https://www.esshopzilla.com/checkout/"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+            results = attr.get_results()
+
+        assert len(results) == 1
+        assert results[0] == ("google.com", "camera", Decimal("450.00"))
+
     def test_write_output_creates_valid_tab_file(self):
         rows = [
             {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
@@ -190,7 +250,6 @@ class TestSessionTimeout:
         rows = [
             {"hit_time_gmt": "1000", "ip": "1.1.1.1", "user_agent": "UA1",
              "referrer": "http://www.google.com/search?q=shoes"},
-            # 2-hour gap -- session should expire
             {"hit_time_gmt": "8200", "ip": "1.1.1.1", "user_agent": "UA1",
              "event_list": "1", "product_list": "S;Shoes;1;100;"},
         ]
@@ -206,7 +265,6 @@ class TestSessionTimeout:
         rows = [
             {"hit_time_gmt": "1000", "ip": "1.1.1.1", "user_agent": "UA1",
              "referrer": "http://www.google.com/search?q=shoes"},
-            # 10-minute gap -- within session
             {"hit_time_gmt": "1600", "ip": "1.1.1.1", "user_agent": "UA1",
              "event_list": "1", "product_list": "S;Shoes;1;100;"},
         ]
@@ -224,7 +282,6 @@ class TestSessionTimeout:
         rows = [
             {"hit_time_gmt": "1000", "ip": "1.1.1.1", "user_agent": "UA1",
              "referrer": "http://www.google.com/search?q=old"},
-            # 2-hour gap
             {"hit_time_gmt": "8200", "ip": "1.1.1.1", "user_agent": "UA1",
              "referrer": "http://www.bing.com/search?q=new"},
             {"hit_time_gmt": "8300", "ip": "1.1.1.1", "user_agent": "UA1",
@@ -279,7 +336,7 @@ class TestCompressedInput:
         assert len(results) == 1
         assert results[0] == ("google.com", "laptop", Decimal("999.00"))
 
-    def test_open_input_plain(self):
+    def test_open_input_reads_plain_tsv(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.tsv")
             with open(path, "w") as f:
@@ -288,7 +345,7 @@ class TestCompressedInput:
             assert fh.read() == "hello\n"
             fh.close()
 
-    def test_open_input_gzip(self):
+    def test_open_input_reads_gzip_tsv(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.tsv.gz")
             with gzip.open(path, "wt") as f:
@@ -307,8 +364,6 @@ class TestPreSorting:
     def test_unsorted_input_with_sort_flag(self):
         """Out-of-order hits are correctly processed when sort_by_time=True."""
         rows = [
-            # Purchase before search referrer in file order, but timestamps
-            # show the search came first.
             {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
              "event_list": "1", "product_list": "E;Phone;1;300;"},
             {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
@@ -337,6 +392,24 @@ class TestPreSorting:
             attr.process_file(path, sort_by_time=False)
 
         assert attr.get_results() == []
+
+    def test_sort_treats_blank_hit_time_gmt_as_zero(self):
+        """Rows with blank hit_time_gmt are treated as timestamp 0 and sort first."""
+        rows = [
+            {"hit_time_gmt": "", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=widget"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;Widget;1;75;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path, sort_by_time=True)
+            results = attr.get_results()
+
+        assert len(results) == 1
+        assert results[0] == ("google.com", "widget", Decimal("75.00"))
+        assert attr.hits_processed == 2
 
 
 # ===================================================================
@@ -369,8 +442,8 @@ class TestCheckpointing:
                 state = json.load(f)
             assert state["hits_processed"] == 2
 
-    def test_checkpoint_restore(self):
-        """Verify that a checkpoint can be restored and state is preserved."""
+    def test_checkpoint_restore_preserves_results(self):
+        """Verify that a checkpoint can be restored and results are preserved."""
         rows = [
             {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
              "referrer": "http://www.google.com/search?q=test"},
@@ -393,8 +466,8 @@ class TestCheckpointing:
                 session_timeout=None,
                 checkpoint_dir=ckpt_dir,
             )
-            attr2._try_restore_checkpoint(path)
-            assert attr2._hits_processed == 2
+            attr2.restore_checkpoint(path)
+            assert attr2.hits_processed == 2
             assert attr2.get_results() == results1
 
 
@@ -409,7 +482,7 @@ class TestGoldenSampleData:
         if not os.path.exists(SAMPLE_DATA):
             pytest.skip("Sample data file (data.sql) not found")
 
-    def test_expected_results_default(self):
+    def test_sample_data_matches_expected_attribution_output(self):
         """Default constructor (no session timeout) matches expected output."""
         attr = SearchKeywordAttributor()
         attr.process_file(SAMPLE_DATA)
@@ -419,7 +492,7 @@ class TestGoldenSampleData:
         assert results[0] == ("google.com", "Ipod", Decimal("480.00"))
         assert results[1] == ("bing.com", "Zune", Decimal("250.00"))
 
-    def test_expected_results_with_session_timeout(self):
+    def test_sample_data_with_session_timeout_matches(self):
         """With 30-min session timeout enabled, sample data results are
         the same (all hits per visitor are within minutes of each other)."""
         attr = SearchKeywordAttributor(session_timeout=1800)
@@ -430,10 +503,10 @@ class TestGoldenSampleData:
         assert results[0] == ("google.com", "Ipod", Decimal("480.00"))
         assert results[1] == ("bing.com", "Zune", Decimal("250.00"))
 
-    def test_hit_count(self):
+    def test_sample_data_processes_all_hits(self):
         attr = SearchKeywordAttributor(session_timeout=None)
         attr.process_file(SAMPLE_DATA)
-        assert attr._hits_processed == 21
+        assert attr.hits_processed == 21
 
     def test_output_file_format(self):
         attr = SearchKeywordAttributor(session_timeout=None)
@@ -453,13 +526,12 @@ class TestGoldenSampleData:
 
     def test_output_matches_reference_artifact(self):
         """Generated output from sample data matches the committed artifact exactly."""
-        reference_dir = os.path.join(os.path.dirname(__file__), "..", "output")
-        reference_files = [
-            f for f in os.listdir(reference_dir)
-            if f.endswith("_SearchKeywordPerformance.tab")
-        ]
-        assert reference_files, "No reference output artifact found in output/"
-        reference_path = os.path.join(reference_dir, reference_files[0])
+        reference_path = os.path.join(
+            os.path.dirname(__file__), "..", "output", REFERENCE_ARTIFACT
+        )
+        assert os.path.exists(reference_path), (
+            f"Reference artifact not found: {REFERENCE_ARTIFACT}"
+        )
 
         attr = SearchKeywordAttributor(session_timeout=None)
         attr.process_file(SAMPLE_DATA)
@@ -474,5 +546,5 @@ class TestGoldenSampleData:
                 reference = fh.read()
 
         assert generated == reference, (
-            f"Generated output does not match reference artifact {reference_files[0]}"
+            f"Generated output does not match reference artifact {REFERENCE_ARTIFACT}"
         )

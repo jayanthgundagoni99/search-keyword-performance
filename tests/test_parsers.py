@@ -66,6 +66,23 @@ class TestExtractSearchReferrer:
     def test_malformed_url_returns_none(self):
         assert extract_search_referrer("not-a-url") is None
 
+    def test_uppercase_hostname_normalized(self):
+        url = "http://WWW.GOOGLE.COM/search?q=tablet"
+        assert extract_search_referrer(url) == ("google.com", "tablet")
+
+    def test_mixed_case_hostname(self):
+        url = "http://www.Bing.Com/search?q=phone"
+        assert extract_search_referrer(url) == ("bing.com", "phone")
+
+    def test_keyword_with_leading_trailing_spaces(self):
+        url = "http://www.google.com/search?q=%20laptop%20"
+        result = extract_search_referrer(url)
+        assert result == ("google.com", "laptop")
+
+    def test_duplicate_query_params_uses_first(self):
+        url = "http://www.google.com/search?q=first&q=second"
+        assert extract_search_referrer(url) == ("google.com", "first")
+
 
 class TestParseEventList:
     def test_purchase_only(self):
@@ -129,3 +146,9 @@ class TestParseProductListRevenue:
     def test_no_float_drift(self):
         pl = "A;B;1;0.1;,C;D;1;0.2;"
         assert parse_product_list_revenue(pl) == Decimal("0.3")
+
+    def test_negative_revenue_still_parsed(self):
+        assert parse_product_list_revenue("A;B;1;-10.00;") == Decimal("-10.00")
+
+    def test_revenue_with_whitespace(self):
+        assert parse_product_list_revenue("A;B;1; 99.99 ;") == Decimal("99.99")
