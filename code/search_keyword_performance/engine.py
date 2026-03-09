@@ -122,6 +122,10 @@ class SearchKeywordAttributor:
         search_info = extract_search_referrer(referrer)
         if search_info:
             self._visitor_search[visitor_key] = search_info
+            domain_s, keyword_s = search_info
+            display_key = (domain_s, keyword_s.lower())
+            if display_key not in self._keyword_display:
+                self._keyword_display[display_key] = keyword_s
 
         # --- attribute purchase revenue ---
         if parse_event_list(event_list):
