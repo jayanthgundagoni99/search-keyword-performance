@@ -20,7 +20,7 @@ const MULTIPART_ABORT_DAYS = 7;
 const DLQ_RETENTION_DAYS = 14;
 const LAMBDA_MEMORY_MB = 512;
 const LAMBDA_EPHEMERAL_STORAGE_GB = 2;
-const LAMBDA_RESERVED_CONCURRENCY = 5;
+// Reserved concurrency omitted for free-tier compatibility
 const LAMBDA_RETRY_ATTEMPTS = 2;
 const BATCH_MAX_VCPUS = 16;
 const BATCH_JOB_VCPU = '2';
@@ -111,7 +111,7 @@ export class SearchKeywordPerformanceStack extends cdk.Stack {
       memorySize: LAMBDA_MEMORY_MB,
       ephemeralStorageSize: cdk.Size.gibibytes(LAMBDA_EPHEMERAL_STORAGE_GB),
       tracing: lambda.Tracing.ACTIVE,
-      reservedConcurrentExecutions: LAMBDA_RESERVED_CONCURRENCY,
+      // reservedConcurrentExecutions omitted for free-tier compatibility
       retryAttempts: LAMBDA_RETRY_ATTEMPTS,
       deadLetterQueue: this.deadLetterQueue,
       logGroup: lambdaLogGroup,
@@ -172,6 +172,12 @@ export class SearchKeywordPerformanceStack extends cdk.Stack {
     // Batch on Fargate for large-file processing (Spot primary, on-demand fallback)
     const vpc = ec2.Vpc.fromLookup(this, 'DefaultVpc', { isDefault: true });
 
+    const batchSecurityGroup = new ec2.SecurityGroup(this, 'BatchSecurityGroup', {
+      vpc,
+      description: 'Security group for Batch Fargate tasks',
+      allowAllOutbound: true,
+    });
+
     const batchExecutionRole = new iam.Role(this, 'BatchExecutionRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
       managedPolicies: [
@@ -198,7 +204,7 @@ export class SearchKeywordPerformanceStack extends cdk.Stack {
         type: 'FARGATE_SPOT',
         maxvCpus: BATCH_MAX_VCPUS,
         subnets: vpc.publicSubnets.map((s) => s.subnetId),
-        securityGroupIds: [],
+        securityGroupIds: [batchSecurityGroup.securityGroupId],
       },
     });
 
@@ -208,7 +214,7 @@ export class SearchKeywordPerformanceStack extends cdk.Stack {
         type: 'FARGATE',
         maxvCpus: BATCH_MAX_VCPUS,
         subnets: vpc.publicSubnets.map((s) => s.subnetId),
-        securityGroupIds: [],
+        securityGroupIds: [batchSecurityGroup.securityGroupId],
       },
     });
 

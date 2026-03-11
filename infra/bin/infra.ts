@@ -7,5 +7,5 @@ const isProd = app.node.tryGetContext('prod') === 'true';
 
 new SearchKeywordPerformanceStack(app, 'SearchKeywordPerformanceStack', {
   terminationProtection: isProd,
-  // env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 });
