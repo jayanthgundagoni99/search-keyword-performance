@@ -96,9 +96,9 @@ test('Lambda has X-Ray tracing enabled', () => {
   });
 });
 
-test('Lambda has reserved concurrency set', () => {
+test('Lambda function exists with correct handler', () => {
   template.hasResourceProperties('AWS::Lambda::Function', {
-    ReservedConcurrentExecutions: 5,
+    Handler: 'search_keyword_handler.handler',
   });
 });
 
