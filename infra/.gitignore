@@ -6,3 +6,6 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# CDK context contains account-specific data (VPC IDs, subnets)
+cdk.context.json

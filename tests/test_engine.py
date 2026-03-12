@@ -10,6 +10,12 @@ from decimal import Decimal
 import pytest
 
 from search_keyword_performance.engine import SearchKeywordAttributor, open_input
+from search_keyword_performance.config import EngineConfig
+from search_keyword_performance.exceptions import (
+    InputSchemaError,
+    CheckpointRestoreError,
+    OutputWriteError,
+)
 
 SAMPLE_DATA = os.path.join(os.path.dirname(__file__), "..", "data", "data.sql")
 REFERENCE_ARTIFACT = "2026-03-05_SearchKeywordPerformance.tab"
@@ -466,9 +472,191 @@ class TestCheckpointing:
                 session_timeout=None,
                 checkpoint_dir=ckpt_dir,
             )
-            attr2.restore_checkpoint(path)
+            attr2.restore_checkpoint()
             assert attr2.hits_processed == 2
             assert attr2.get_results() == results1
+
+
+# ===================================================================
+# Schema validation tests
+# ===================================================================
+
+
+class TestSchemaValidation:
+    def test_missing_required_column_raises_error(self):
+        """Schema validation fails fast when a required column is missing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "bad.tsv")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("ip\tuser_agent\n")
+                fh.write("1.2.3.4\tUA1\n")
+
+            attr = SearchKeywordAttributor(session_timeout=None, validate_schema=True)
+            with pytest.raises(InputSchemaError, match="missing required columns"):
+                attr.process_file(path)
+
+    def test_valid_schema_passes(self):
+        """All required columns present passes validation."""
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=test"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None, validate_schema=True)
+            attr.process_file(path)
+            assert attr.hits_processed == 1
+
+    def test_validation_disabled_skips_check(self):
+        """With validate_schema=False, missing columns do not raise."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "minimal.tsv")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("ip\tuser_agent\n")
+                fh.write("1.2.3.4\tUA1\n")
+
+            attr = SearchKeywordAttributor(session_timeout=None, validate_schema=False)
+            attr.process_file(path)
+            assert attr.hits_processed == 1
+
+
+# ===================================================================
+# Data quality metrics tests
+# ===================================================================
+
+
+class TestDataQualityMetrics:
+    def test_unattributed_purchase_counted(self):
+        """Purchase without prior search is counted as unattributed."""
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.esshopzilla.com/home"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;Item;1;100;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+
+        assert attr.quality.unattributed_purchases == 1
+        assert attr.quality.total_revenue_unattributed == Decimal("100")
+
+    def test_attributed_purchase_counted(self):
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=test"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;Item;1;50;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+
+        assert attr.quality.attributed_purchase_events == 1
+        assert attr.quality.total_revenue_attributed == Decimal("50")
+        assert attr.quality.total_purchase_events == 1
+
+    def test_purchase_without_revenue_counted(self):
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=test"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;Item;1;;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+
+        assert attr.quality.purchases_without_revenue == 1
+
+    def test_search_referrer_rows_counted(self):
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=shoes"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.esshopzilla.com/cart/"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+
+        assert attr.quality.rows_with_search_referrer == 1
+
+
+# ===================================================================
+# Metadata / manifest tests
+# ===================================================================
+
+
+class TestMetadataOutput:
+    def test_write_metadata_creates_json(self):
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=test"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;Item;1;50;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+
+            meta_path = os.path.join(tmpdir, "metadata.json")
+            attr.write_metadata(meta_path)
+
+            assert os.path.exists(meta_path)
+            with open(meta_path) as f:
+                metadata = json.load(f)
+
+        assert metadata["rows_processed"] == 2
+        assert metadata["keyword_groups"] == 1
+        assert metadata["schema_version"] == "v1"
+        assert "data_quality" in metadata
+        assert "results_summary" in metadata
+        assert len(metadata["results_summary"]) == 1
+
+    def test_get_metadata_returns_dict(self):
+        rows = [
+            {"hit_time_gmt": "100", "ip": "1.1.1.1", "user_agent": "UA1",
+             "referrer": "http://www.google.com/search?q=test"},
+            {"hit_time_gmt": "200", "ip": "1.1.1.1", "user_agent": "UA1",
+             "event_list": "1", "product_list": "E;Item;1;50;"},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _make_tsv(rows, tmpdir)
+            attr = SearchKeywordAttributor(session_timeout=None)
+            attr.process_file(path)
+
+        meta = attr.get_metadata()
+        assert meta["rows_processed"] == 2
+        assert meta["keyword_groups"] == 1
+        assert "data_quality" in meta
+
+
+# ===================================================================
+# Config tests
+# ===================================================================
+
+
+class TestEngineConfig:
+    def test_default_config(self):
+        config = EngineConfig()
+        assert config.session_timeout is None
+        assert config.sort_by_time is False
+        assert config.validate_schema is True
+
+    def test_negative_session_timeout_raises(self):
+        with pytest.raises(ValueError, match="session_timeout"):
+            EngineConfig(session_timeout=-1)
+
+    def test_from_config_constructor(self):
+        config = EngineConfig(session_timeout=1800, sort_by_time=True)
+        attr = SearchKeywordAttributor.from_config(config)
+        assert attr._session_timeout == 1800
 
 
 # ===================================================================
@@ -548,3 +736,12 @@ class TestGoldenSampleData:
         assert generated == reference, (
             f"Generated output does not match reference artifact {REFERENCE_ARTIFACT}"
         )
+
+    def test_sample_data_quality_metrics(self):
+        """Verify data quality metrics for the sample dataset."""
+        attr = SearchKeywordAttributor(session_timeout=None)
+        attr.process_file(SAMPLE_DATA)
+
+        assert attr.quality.total_purchase_events >= 2
+        assert attr.quality.attributed_purchase_events >= 2
+        assert attr.quality.total_revenue_attributed == Decimal("730")

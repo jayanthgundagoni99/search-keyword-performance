@@ -267,31 +267,47 @@ These are available in the codebase but are not required for the exercise:
 ```
 code/search_keyword_performance/
   parsers.py       3 pure functions (no state, no I/O, easy to unit-test)
-  engine.py        SearchKeywordAttributor class (streaming, session timeout,
-                     compressed input, pre-sorting, checkpointing)
-  __main__.py      CLI with argparse (--sort, --session-timeout, --checkpoint-dir)
+  engine.py        SearchKeywordAttributor class + DataQualityMetrics
+  config.py        Centralized EngineConfig (CLI, Lambda, Batch modes)
+  exceptions.py    Structured error taxonomy (6 error categories)
+  __main__.py      CLI with argparse (--sort, --session-timeout, --metadata, etc.)
 
 code/
-  search_keyword_handler.py   Lambda entry point (S3 event -> process -> S3 output)
-  batch_handler.py            Batch/Fargate entry point (env vars -> S3 I/O)
+  search_keyword_handler.py   Lambda entry point (idempotency, metadata, structured logs)
+  batch_handler.py            Batch/Fargate entry point (config from env)
   glue/
     search_keyword_glue.py    PySpark Glue job (partitioned attribution)
 
 tests/
-  test_parsers.py    13 unit tests for parsing edge cases
-  test_engine.py     20+ tests: core attribution, session timeout, compressed input,
-                       pre-sorting, checkpointing, golden data
+  test_parsers.py    38 unit tests for parsing edge cases
+  test_engine.py     40 tests: core attribution, session timeout, compressed input,
+                       pre-sorting, checkpointing, schema validation, data quality,
+                       metadata output, config validation, golden data
 
 infra/
-  lib/infra-stack.ts   CDK stack: S3 + Lambda + ECR + Batch/Fargate
-  test/infra.test.ts   CDK stack assertions (S3, Lambda, ECR, Batch)
+  lib/infra-stack.ts   CDK stack: S3 + Lambda + Batch + Glue + monitoring
+  test/infra.test.ts   CDK stack assertions
 ```
 
 ---
 
-## 10. What I Would Add with More Time
+## 10. Production Hardening Summary
+
+| Category | Feature | Status |
+|---|---|---|
+| Correctness | Schema validation, Decimal arithmetic, exact event matching | Implemented |
+| Observability | Data quality metrics, business metrics in logs, metadata manifests | Implemented |
+| Reliability | Idempotency guard, atomic writes, checkpointing, DLQ, alarms | Implemented |
+| Scalability | Lambda → Batch → Glue tiering, memory guardrails | Implemented |
+| Security | Encryption at rest/in transit, least-privilege IAM, no PII in logs | Implemented |
+| Maintainability | Centralized config, structured errors, 78 tests, CI pipeline | Implemented |
+
+---
+
+## 11. What I Would Add with More Time
 
 1. Multi-touch attribution (proportional credit across all search touchpoints)
 2. Session-based analysis (duration, page depth, conversion funnel per keyword)
-3. Automated data quality checks (column validation, anomaly detection)
-4. Dashboard (QuickSight or Streamlit for interactive exploration)
+3. Dashboard (QuickSight or Streamlit for interactive exploration)
+4. Lake Formation data catalog with column-level access control
+5. Step Functions orchestration for multi-file batch workflows

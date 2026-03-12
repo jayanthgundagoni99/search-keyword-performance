@@ -1,9 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as batch from 'aws-cdk-lib/aws-batch';
+import * as glue from 'aws-cdk-lib/aws-glue';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -265,6 +267,52 @@ export class SearchKeywordPerformanceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BucketName', {
       value: this.bucket.bucketName,
       description: 'S3 bucket for input/output data files.',
+    });
+
+    // ---------------------------------------------------------------
+    // Glue ETL job for large-scale (50+ GB) processing
+    // ---------------------------------------------------------------
+
+    void new s3deploy.BucketDeployment(this, 'GlueScriptDeployment', {
+      sources: [s3deploy.Source.asset(path.join(__dirname, '..', '..', 'code', 'glue'))],
+      destinationBucket: this.bucket,
+      destinationKeyPrefix: 'scripts/',
+    });
+
+    const glueRole = new iam.Role(this, 'GlueJobRole', {
+      assumedBy: new iam.ServicePrincipal('glue.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSGlueServiceRole'),
+      ],
+    });
+    this.bucket.grantReadWrite(glueRole);
+
+    void new glue.CfnJob(this, 'SearchKeywordGlueJob', {
+      name: 'search-keyword-performance',
+      role: glueRole.roleArn,
+      command: {
+        name: 'glueetl',
+        scriptLocation: `s3://${this.bucket.bucketName}/scripts/search_keyword_glue.py`,
+        pythonVersion: '3',
+      },
+      defaultArguments: {
+        '--input_path': `s3://${this.bucket.bucketName}/input/`,
+        '--output_path': `s3://${this.bucket.bucketName}/glue-output/`,
+        '--session_timeout': '0',
+        '--job-language': 'python',
+      },
+      glueVersion: '4.0',
+      numberOfWorkers: 2,
+      workerType: 'G.1X',
+    });
+
+    // ---------------------------------------------------------------
+    // Stack outputs
+    // ---------------------------------------------------------------
+
+    new cdk.CfnOutput(this, 'GlueJobName', {
+      value: 'search-keyword-performance',
+      description: 'Name of the Glue ETL job for large-scale processing.',
     });
 
     new cdk.CfnOutput(this, 'AccessLogsBucketName', {

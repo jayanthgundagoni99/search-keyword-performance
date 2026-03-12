@@ -1,14 +1,15 @@
 """AWS Batch handler for Search Keyword Performance Attribution.
 
 Designed to run as a Fargate container task.  Reads configuration from
-environment variables, downloads the input file from S3, runs the
-attribution engine, and uploads the result.
+environment variables via the centralized ``EngineConfig``, downloads the
+input file from S3, runs the attribution engine, and uploads the result
+along with a metadata manifest.
 
 Environment variables:
     INPUT_BUCKET   -- S3 bucket containing the input file
     INPUT_KEY      -- S3 object key of the input file
     OUTPUT_PREFIX  -- S3 key prefix for the output file (default: "output/")
-    SESSION_TIMEOUT -- Session timeout in seconds (default: 1800, "0" to disable)
+    SESSION_TIMEOUT -- Session timeout in seconds (default: 0 = disabled)
     SORT_BY_TIME   -- "1" to pre-sort input by hit_time_gmt (default: "0")
     CHECKPOINT_DIR -- Local directory for checkpoint files (default: /tmp/checkpoints)
 """
@@ -22,7 +23,9 @@ from datetime import date
 
 import boto3
 
+from search_keyword_performance.config import EngineConfig
 from search_keyword_performance.engine import SearchKeywordAttributor
+from search_keyword_performance.exceptions import SearchKeywordError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,15 +42,20 @@ def main() -> None:
         sys.exit(1)
 
     output_prefix = os.environ.get("OUTPUT_PREFIX", "output/")
-    checkpoint_dir = os.environ.get("CHECKPOINT_DIR", "/tmp/checkpoints")
-    sort_by_time = os.environ.get("SORT_BY_TIME", "0") == "1"
 
-    timeout_raw = os.environ.get("SESSION_TIMEOUT", "1800")
-    session_timeout = None if timeout_raw == "0" else int(timeout_raw)
+    config = EngineConfig.from_env()
+    if not config.checkpoint_dir:
+        config = EngineConfig(
+            session_timeout=config.session_timeout,
+            sort_by_time=config.sort_by_time,
+            checkpoint_dir=os.environ.get("CHECKPOINT_DIR", "/tmp/checkpoints"),
+            checkpoint_interval=config.checkpoint_interval,
+            memory_warn_threshold=config.memory_warn_threshold,
+        )
 
     logger.info(
         "Config: bucket=%s key=%s output_prefix=%s session_timeout=%s sort=%s",
-        bucket, key, output_prefix, session_timeout, sort_by_time,
+        bucket, key, output_prefix, config.session_timeout, config.sort_by_time,
     )
 
     s3 = boto3.client("s3")
@@ -60,11 +68,8 @@ def main() -> None:
             logger.info("Downloading s3://%s/%s -> %s", bucket, key, local_input)
             s3.download_file(bucket, key, local_input)
 
-            attributor = SearchKeywordAttributor(
-                session_timeout=session_timeout,
-                checkpoint_dir=checkpoint_dir,
-            )
-            attributor.process_file(local_input, sort_by_time=sort_by_time)
+            attributor = SearchKeywordAttributor.from_config(config)
+            attributor.process_file(local_input, sort_by_time=config.sort_by_time)
 
             today = date.today().strftime("%Y-%m-%d")
             output_filename = f"{today}_SearchKeywordPerformance.tab"
@@ -75,11 +80,21 @@ def main() -> None:
             logger.info("Uploading %s -> s3://%s/%s", local_output, bucket, output_key)
             s3.upload_file(local_output, bucket, output_key)
 
+            metadata_filename = f"{today}_SearchKeywordPerformance_metadata.json"
+            local_metadata = os.path.join(tmpdir, metadata_filename)
+            attributor.write_metadata(local_metadata)
+            metadata_key = f"{output_prefix}{metadata_filename}"
+            s3.upload_file(local_metadata, bucket, metadata_key)
+
         logger.info(
             "Batch job complete: %d hits processed, %d keyword groups",
             attributor.hits_processed, len(attributor.get_results()),
         )
+        logger.info("Data quality: %s", attributor.quality.to_dict())
 
+    except SearchKeywordError as e:
+        logger.error("Processing error [%s]: %s", type(e).__name__, e)
+        sys.exit(1)
     except Exception:
         logger.error("Batch job failed:\n%s", traceback.format_exc())
         sys.exit(1)

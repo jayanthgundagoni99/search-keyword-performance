@@ -67,6 +67,13 @@ Thumbs.db
 # Generated output files (search keyword performance)
 *_SearchKeywordPerformance.tab
 !output/*_SearchKeywordPerformance.tab
+output_*.tab
+output_*.json
+*_metadata.json
+!data/*
+
+# Glue output partitions
+part-*.csv
 
 # Checkpoints
 skp_checkpoint.json

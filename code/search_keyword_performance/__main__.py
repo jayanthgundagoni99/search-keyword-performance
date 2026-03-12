@@ -7,6 +7,8 @@ Production flags:
     --session-timeout N   Enable session timeout (seconds, e.g. 1800 for 30 min)
     --sort                Pre-sort input by hit_time_gmt
     --checkpoint-dir DIR  Enable checkpointing to DIR
+    --no-validate         Skip schema validation
+    --metadata            Write a JSON metadata file alongside the output
 """
 
 import argparse
@@ -14,7 +16,9 @@ import logging
 import sys
 from datetime import date
 
+from .config import EngineConfig
 from .engine import SearchKeywordAttributor
+from .exceptions import InputSchemaError, SearchKeywordError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +53,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--checkpoint-dir",
         help="Directory for checkpoint files (enables crash recovery)",
     )
+    p.add_argument(
+        "--no-validate", action="store_true",
+        help="Skip input schema validation",
+    )
+    p.add_argument(
+        "--metadata", action="store_true",
+        help="Write a JSON metadata/manifest file alongside the output",
+    )
     return p
 
 
@@ -60,29 +72,44 @@ def main() -> None:
         today = date.today().strftime("%Y-%m-%d")
         output_file = f"{today}_SearchKeywordPerformance.tab"
 
+    config = EngineConfig(
+        session_timeout=args.session_timeout,
+        sort_by_time=args.sort,
+        checkpoint_dir=args.checkpoint_dir,
+        validate_schema=not args.no_validate,
+    )
+
     logger.info("Starting Search Keyword Performance Attribution")
     logger.info("Input : %s", args.input_file)
     logger.info("Output: %s", output_file)
-    if args.session_timeout is not None:
-        logger.info("Session timeout: %ds", args.session_timeout)
+    if config.session_timeout is not None:
+        logger.info("Session timeout: %ds", config.session_timeout)
     else:
         logger.info("Session timeout: disabled (pure file-order last-touch)")
-    if args.sort:
+    if config.sort_by_time:
         logger.info("Pre-sorting: enabled")
-    if args.checkpoint_dir:
-        logger.info("Checkpointing: %s", args.checkpoint_dir)
+    if config.checkpoint_dir:
+        logger.info("Checkpointing: %s", config.checkpoint_dir)
 
-    attributor = SearchKeywordAttributor(
-        session_timeout=args.session_timeout,
-        checkpoint_dir=args.checkpoint_dir,
-    )
-    attributor.process_file(args.input_file, sort_by_time=args.sort)
-    attributor.write_output(output_file)
+    try:
+        attributor = SearchKeywordAttributor.from_config(config)
+        attributor.process_file(args.input_file, sort_by_time=config.sort_by_time)
+        attributor.write_output(output_file)
 
-    for domain, keyword, revenue in attributor.get_results():
-        logger.info("  %s\t%s\t%s", domain, keyword, revenue)
+        if args.metadata:
+            metadata_file = output_file.rsplit(".", 1)[0] + "_metadata.json"
+            attributor.write_metadata(metadata_file)
 
-    logger.info("Done.")
+        for domain, keyword, revenue in attributor.get_results():
+            logger.info("  %s\t%s\t%s", domain, keyword, revenue)
+
+        logger.info("Done.")
+    except InputSchemaError as e:
+        logger.error("Input schema error: %s", e)
+        sys.exit(2)
+    except SearchKeywordError as e:
+        logger.error("Processing error: %s", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

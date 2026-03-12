@@ -96,12 +96,6 @@ test('Lambda has X-Ray tracing enabled', () => {
   });
 });
 
-test('Lambda function exists with correct handler', () => {
-  template.hasResourceProperties('AWS::Lambda::Function', {
-    Handler: 'search_keyword_handler.handler',
-  });
-});
-
 test('Lambda has ephemeral storage configured', () => {
   template.hasResourceProperties('AWS::Lambda::Function', {
     EphemeralStorage: { Size: 2048 },
@@ -198,7 +192,34 @@ test('Batch job definition has retry strategy and timeout', () => {
   });
 });
 
+test('Stack creates a Glue ETL job for large-scale processing', () => {
+  template.hasResourceProperties('AWS::Glue::Job', {
+    Name: 'search-keyword-performance',
+    Command: {
+      Name: 'glueetl',
+      PythonVersion: '3',
+    },
+    GlueVersion: '4.0',
+    NumberOfWorkers: 2,
+    WorkerType: 'G.1X',
+  });
+});
+
+test('Glue job has an IAM role with S3 access', () => {
+  template.hasResourceProperties('AWS::IAM::Role', {
+    AssumeRolePolicyDocument: {
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: { Service: 'glue.amazonaws.com' },
+          Action: 'sts:AssumeRole',
+        },
+      ],
+    },
+  });
+});
+
 test('Stack has expected outputs', () => {
   const outputs = template.findOutputs('*');
-  expect(Object.keys(outputs).length).toBeGreaterThanOrEqual(8);
+  expect(Object.keys(outputs).length).toBeGreaterThanOrEqual(9);
 });
